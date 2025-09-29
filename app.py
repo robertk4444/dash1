@@ -60,7 +60,7 @@ app.layout = html.Div([
                 multi=True,
                 placeholder="Wybierz metodę (opcjonalnie)"
             ),
-        ], style={"width": "30%", "display": "inline-block", "verticalAlign": "top", "paddingRight": "16px"}),
+        ], style={"width": "30%", "display": "inline-block", "verticalAlign": "top", "paddingRight": "12px"}),
 
         html.Div([
             html.Label("Produkt"),
@@ -70,11 +70,22 @@ app.layout = html.Div([
                 multi=True,
                 placeholder="Wybierz produkt (opcjonalnie)"
             ),
-        ], style={"width": "40%", "display": "inline-block", "verticalAlign": "top"}),
+        ], style={"width": "40%", "display": "inline-block", "verticalAlign": "top", "paddingRight": "12px"}),
+
+        html.Div([
+            html.Label("Dzień tygodnia"),
+            dcc.Dropdown(
+                id="weekday-filter",
+                options=[{"label": w, "value": w} for w in WEEK_ORDER],
+                value=None,          # domyślnie wszystkie
+                multi=True,
+                placeholder="Wybierz dni (opcjonalnie)"
+            ),
+        ], style={"width": "28%", "display": "inline-block", "verticalAlign": "top"}),
     ], style={"marginBottom": "12px"}),
 
     dcc.Graph(id="line-chart"),             # 1) linie wg dnia tygodnia
-    dcc.Graph(id="stacked-line-chart"),     # 2) NOWY: suma godzinowa (po filtrach)
+    dcc.Graph(id="stacked-line-chart"),     # 2) SUMA godzinowa po wybranych filtrach (w tym dniach)
     dcc.Graph(id="heatmap"),
     dcc.Graph(id="top-products")
 ])
@@ -89,15 +100,21 @@ app.layout = html.Div([
     [
         Input("payment-filter", "value"),
         Input("product-filter", "value"),
+        Input("weekday-filter", "value"),
     ]
 )
-def update_charts(payment_methods, products):
+def update_charts(payment_methods, products, weekdays):
     dff = df.copy()
 
+    # Filtrowanie metod płatności i produktów
     if payment_methods:
         dff = dff[dff["PaymentMethod"].isin(payment_methods)]
     if products:
         dff = dff[dff["Product"].isin(products)]
+
+    # Filtrowanie dni tygodnia (jeśli coś zaznaczono)
+    if weekdays and len(weekdays) > 0:
+        dff = dff[dff["Weekday"].isin(weekdays)]
 
     # --- 1) Wykres: sprzedaż godzinowa wg dnia tygodnia ---
     hourly = (
@@ -111,10 +128,12 @@ def update_charts(payment_methods, products):
         title="Sprzedaż wg godziny i dnia tygodnia"
     )
 
-    # --- 2) NOWY Wykres: sprzedaż godzinowa SUMARYCZNA (suma po wybranych dniach/metodach/produktach) ---
+    # --- 2) NOWY Wykres: sprzedaż godzinowa SUMARYCZNA (suma po wybranych filtrach) ---
     hourly_sum = (
         dff.groupby("Hour")["Total"]
-        .sum().reset_index()
+        .sum()
+        .reindex(range(24), fill_value=0)   # pełne godziny 0..23
+        .reset_index().rename(columns={"index": "Hour"})
         .sort_values("Hour")
     )
     fig_sum = px.line(
@@ -135,18 +154,4 @@ def update_charts(payment_methods, products):
 
     # --- 4) Top produkty ---
     top_products = (
-        dff.groupby("Product", dropna=False)["Total"]
-        .sum().sort_values(ascending=False).head(10).reset_index()
-    )
-    fig3 = px.bar(
-        top_products, x="Total", y="Product", orientation="h",
-        title="Top 10 produktów wg sprzedaży"
-    )
-
-    return fig1, fig_sum, fig2, fig3
-
-
-# ===== Uruchomienie pod Render (PORT z env) =====
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8050))
-    app.run(host="0.0.0.0", port=port, debug=False)
+        dff.groupby("Product", drop
