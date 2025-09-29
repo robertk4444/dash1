@@ -4,10 +4,10 @@ import dash
 from dash import dcc, html, Input, Output
 import plotly.express as px
 
-# ===== Konfiguracja ścieżki CSV (plik w repo, obok app.py) =====
+# ===== Ścieżka CSV (plik w repo, obok app.py) =====
 CSV_PATH = "sprzedaz_pos_100.csv"
 
-# ===== Wczytanie danych z różnymi kodowaniami (PL nagłówki) =====
+# ===== Wczytanie danych z różnymi kodowaniami =====
 def load_data():
     encodings = ["utf-8", "utf-8-sig", "cp1250"]
     last_err = None
@@ -20,7 +20,7 @@ def load_data():
 
 df_raw = load_data()
 
-# ===== Mapowanie nazw kolumn PL -> EN (dopasowane do Twojego CSV) =====
+# ===== Mapowanie nagłówków PL -> EN (dopasowane do Twojego CSV) =====
 rename_map = {
     "ID transakcji": "TransactionID",
     "Data": "Date",
@@ -36,7 +36,7 @@ rename_map = {
 }
 df = df_raw.rename(columns=rename_map).copy()
 
-# ===== Przygotowanie pól czasowych =====
+# ===== Pola czasowe =====
 df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
 df["Hour"] = pd.to_datetime(df["Time"], format="%H:%M:%S", errors="coerce").dt.hour
 df["Weekday"] = df["Date"].dt.day_name()
@@ -77,15 +77,14 @@ app.layout = html.Div([
             dcc.Dropdown(
                 id="weekday-filter",
                 options=[{"label": w, "value": w} for w in WEEK_ORDER],
-                value=None,          # domyślnie wszystkie
-                multi=True,
+                multi=True,           # brak value -> domyślnie wszystkie
                 placeholder="Wybierz dni (opcjonalnie)"
             ),
         ], style={"width": "28%", "display": "inline-block", "verticalAlign": "top"}),
     ], style={"marginBottom": "12px"}),
 
     dcc.Graph(id="line-chart"),             # 1) linie wg dnia tygodnia
-    dcc.Graph(id="stacked-line-chart"),     # 2) SUMA godzinowa po wybranych filtrach (w tym dniach)
+    dcc.Graph(id="stacked-line-chart"),     # 2) SUMA godzinowa po wybranych filtrach
     dcc.Graph(id="heatmap"),
     dcc.Graph(id="top-products")
 ])
@@ -106,21 +105,16 @@ app.layout = html.Div([
 def update_charts(payment_methods, products, weekdays):
     dff = df.copy()
 
-    # Filtrowanie metod płatności i produktów
+    # Filtry
     if payment_methods:
         dff = dff[dff["PaymentMethod"].isin(payment_methods)]
     if products:
         dff = dff[dff["Product"].isin(products)]
-
-    # Filtrowanie dni tygodnia (jeśli coś zaznaczono)
     if weekdays and len(weekdays) > 0:
         dff = dff[dff["Weekday"].isin(weekdays)]
 
     # --- 1) Wykres: sprzedaż godzinowa wg dnia tygodnia ---
-    hourly = (
-        dff.groupby(["Weekday", "Hour"], dropna=False)["Total"]
-        .sum().reset_index()
-    )
+    hourly = dff.groupby(["Weekday", "Hour"], as_index=False)["Total"].sum()
     hourly["Weekday"] = pd.Categorical(hourly["Weekday"], categories=WEEK_ORDER, ordered=True)
     hourly = hourly.sort_values(["Weekday", "Hour"])
     fig1 = px.line(
@@ -128,30 +122,37 @@ def update_charts(payment_methods, products, weekdays):
         title="Sprzedaż wg godziny i dnia tygodnia"
     )
 
-    # --- 2) NOWY Wykres: sprzedaż godzinowa SUMARYCZNA (suma po wybranych filtrach) ---
-    hourly_sum = (
-        dff.groupby("Hour")["Total"]
-        .sum()
-        .reindex(range(24), fill_value=0)   # pełne godziny 0..23
-        .reset_index().rename(columns={"index": "Hour"})
-        .sort_values("Hour")
-    )
+    # --- 2) SUMA godzinowa (po wybranych filtrach) ---
+    # Pełna siatka godzin 0..23
+    hours_df = pd.DataFrame({"Hour": list(range(24))})
+    hourly_sum = dff.groupby("Hour", as_index=False)["Total"].sum()
+    hourly_sum = hours_df.merge(hourly_sum, on="Hour", how="left").fillna({"Total": 0})
     fig_sum = px.line(
         hourly_sum, x="Hour", y="Total",
         title="Sprzedaż wg godziny (suma wybranych filtrów)"
     )
 
-    # --- 3) Heatmapa ---
-    heatmap = (
-        dff.pivot_table(index="Weekday", columns="Hour", values="Total", aggfunc="sum", fill_value=0)
-        .reindex(WEEK_ORDER)
-    )
+    # --- 3) Heatmapa (pełne 7 dni x 24 godziny) ---
+    heat = dff.pivot_table(index="Weekday", columns="Hour", values="Total", aggfunc="sum", fill_value=0)
+    heat = heat.reindex(WEEK_ORDER)  # kolejnosc dni
+    heat = heat.reindex(columns=list(range(24)), fill_value=0)  # pełne godziny
     fig2 = px.imshow(
-        heatmap,
+        heat,
         labels=dict(x="Godzina", y="Dzień tygodnia", color="Sprzedaż"),
         title="Heatmapa: dzień tygodnia vs godzina"
     )
 
     # --- 4) Top produkty ---
-    top_products = (
-        dff.groupby("Product", drop
+    top_products = dff.groupby("Product", as_index=False)["Total"].sum().sort_values("Total", ascending=False).head(10)
+    fig3 = px.bar(
+        top_products, x="Total", y="Product", orientation="h",
+        title="Top 10 produktów wg sprzedaży"
+    )
+
+    return fig1, fig_sum, fig2, fig3
+
+
+# ===== Start pod Render (port z ENV) =====
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8050))
+    app.run(host="0.0.0.0", port=port, debug=False)
